@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+__MACOSX/
+
+# Project Specific (Prevent committing massive log/data files)
+runs/
+Model_Weights/
+*.tfevents.*
+*.pth
+*.pt
+
+# Virtual Machine files (URSim)
+*.vmdk
+*.vbox
+*.vmem
+*.vmem.lck/
+*.vmdk.lck/
+*.vmx.lck/

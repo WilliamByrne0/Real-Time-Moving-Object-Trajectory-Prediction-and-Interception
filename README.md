@@ -95,10 +95,6 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
    If you plan to use GPU acceleration for AI models, install PyTorch with CUDA support following the [official instructions](https://pytorch.org/get-started/locally/).
 
-4. **Download pre‑trained model weights** (if not already in `models/`):
-   - Place `LSTM.pth`, `Transformer.pth`, `TrainData_train.pt`, `TrainData_test.pt`, and the normalisation files (`LSTMNorm.pt`, `TransformerNorm.pt`) in the `models/` folder.
-   - If you are training your own models, see [Training Your Own Models](#training-your-own-models).
-
 ## Configuration
 
 All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_Real_06_05_26.py`. Key settings include:
@@ -117,7 +113,6 @@ All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_
 | `MIN_TIME`, `MAX_TIME` | Acceptable time window (seconds) for robot arrival. |
 | `REST_ANGLE` | Default joint angles of the UR3e (obtained from robot). |
 
-**Important:** After changing the configuration, restart the script.
 
 ## Usage
 
@@ -140,7 +135,7 @@ If you want to test without a robot or camera, set `SIMULATION = 1` and point `V
 
 ```bash
 # Edit the config file or parameters to enable simulation
-python src/hexapod_intercept/Obj_int_Real_06_05_26.py
+python src/hexapod_intercept/interception.py
 ```
 
 ### Recording Output
@@ -152,7 +147,7 @@ Set `SAVE_VIDEO = 1` and specify `OUTPUT_PATH` to save the annotated video.
 ### Data Preparation
 
 1. Record videos of the target moving in the arena (e.g., the hexapod walking).
-2. Use the data preprocessing script `traindata_22_03_2026.py` (provided in the repo) to extract the object positions from the videos.
+2. Use the data preprocessing script `traindata_08_03_2026.py` (provided in the repo) to extract the object positions from the videos.
 3. The script will generate `.pt` files containing sequences of positions, velocities, and accelerations, divided into training and test sets.
 
 ### LSTM Training
@@ -167,7 +162,7 @@ This will train an LSTM model on the dataset and save the weights to `models/LST
 
 Run:
 ```bash
-python src/hexapod_intercept/Transformer_Train_03_05_2026.py
+python src/hexapod_intercept/Transformer_Train.py
 ```
 This trains the Transformer model and saves weights to `models/Transformer.pth`.
 
@@ -202,9 +197,6 @@ The `insectbot_hexa.ino` file is uploaded to the InsectBot's Arduino board. It c
 | **High prediction error** | Model not trained for current motion pattern. | Collect more training data or adjust model hyperparameters. |
 | **Camera frame drop** | High resolution or FPS too high. | Reduce `WIDTH`/`HEIGHT` or `FPS`. |
 
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
 
 ## License
 
@@ -227,7 +219,6 @@ limitations under the License.
 ```
 
 ## Acknowledgments
-
 - [Lumi](http://www.dfrobot.com) for the InsectBot Mini MKII design.
 - Universal Robots for the UR3e SDK and documentation.
 - The PyTorch and OpenCV communities for their excellent libraries.

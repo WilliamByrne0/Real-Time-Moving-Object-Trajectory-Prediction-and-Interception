@@ -1,9 +1,0 @@
-runtime:
-  simulation: true
-  send_xmlrpc: false
-  real_speed: false
-  video_path: "Datasets/Bug_walk_8_03_2026/Cropped/bug (55)_cropped.mp4"
-
-prediction:
-  model: kalman
-  grad_threshold: 0.10

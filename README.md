@@ -111,7 +111,7 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
 ## Configuration
 
-All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_Real_06_05_26.py`. Key settings include:
+All tunable parameters are defined at the top of `src/hexapod_intercept/interception.py`. Key settings include:
 
 | Parameter | Description |
 |-----------|-------------|
@@ -140,7 +140,7 @@ All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_
 2. Start the PolyScope program that exposes the XML‑RPC server (see [Robot Setup](#robot-setup)).
 3. Run the main script:
    ```bash
-   python src/hexapod_intercept/Obj_int_Real_06_05_26.py
+   python src/hexapod_intercept/interception.py
    ```
 4. A window will appear showing the camera feed. 
    - Press **`W`** to compute the arena perspective transform (must see the red tape).
@@ -153,7 +153,7 @@ If you want to test without a robot or camera, set `SIMULATION = 1` and point `V
 
 ```bash
 # Edit the config file or parameters to enable simulation
-python src/hexapod_intercept/Obj_int_Real_06_05_26.py
+python src/hexapod_intercept/interception.py
 ```
 
 ### Recording Output

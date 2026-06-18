@@ -10,14 +10,3 @@ torchvision>=0.16.0
 
 # Visualization
 matplotlib>=3.7.0
-
-# Communication
-# (xmlrpc.server / xmlrpc.client are in the standard library)
-
-# Optional: GPU inference
-# nvidia-cudnn-cu12>=8.9
-# nvidia-cublas-cu12>=12.1
-
-# Logging / utilities
-tqdm>=4.65.0
-rich>=13.0

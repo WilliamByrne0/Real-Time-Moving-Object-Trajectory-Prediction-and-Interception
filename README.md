@@ -109,10 +109,6 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
    If you plan to use GPU acceleration for AI models, install PyTorch with CUDA support following the [official instructions](https://pytorch.org/get-started/locally/).
 
-4. **Download pre‑trained model weights** (if not already in `models/`):
-   - Place `LSTM.pth`, `Transformer.pth`, `TrainData_train.pt`, `TrainData_test.pt`, and the normalisation files (`LSTMNorm.pt`, `TransformerNorm.pt`) in the `models/` folder.
-   - If you are training your own models, see [Training Your Own Models](#training-your-own-models).
-
 ## Configuration
 
 All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_Real_06_05_26.py`. Key settings include:

@@ -1,0 +1,11 @@
+runtime:
+  simulation: false
+  send_xmlrpc: true
+  real_speed: true
+
+prediction:
+  model: transformer
+  grad_threshold: 0.04
+
+robot:
+  measured_latency_s: 0.064

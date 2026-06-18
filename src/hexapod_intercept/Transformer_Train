@@ -1,0 +1,431 @@
+import sys
+import torch
+import matplotlib.pyplot as plt
+import numpy as np
+import torch.nn as nn
+from torch.utils.data import TensorDataset, DataLoader
+import torch.nn.functional as F
+
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+scaler = torch.amp.GradScaler(device='cuda')
+torch.backends.cuda.enable_flash_sdp(True)
+
+# Force cuDNN optimized kernels
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+
+# Use TensorFloat32 for faster matmul on Ampere GPUs
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+import torch._inductor.config as inductor_config
+
+# Add this before torch.compile
+inductor_config.fx_graph_cache = True  # caches compiled graph to disk
+
+# Loss weighting
+VELOCITY_GAIN = 1.0
+POSITION_GAIN = 1.0
+WEIGHT_X = 1.0   # weigh x‑velocity error more?
+WEIGHT_Y = 1.0
+
+print(torch.__version__)
+print(torch.version.cuda)  # CUDA version (if applicable)
+print(torch.backends.cudnn.version())  # cuDNN version (if applicable)
+
+class Transformer(nn.Module):
+    def __init__(self, input_features, History_length, Prediction_length, Output_dim):
+        super(Transformer, self).__init__()
+        self.History_length = History_length
+        self.droplayer = 0.3
+
+        # ---- Embedding ----
+        self.dictionary = 128 * 4
+        self.enc_emb = nn.Sequential(
+            nn.Linear(input_features, self.dictionary * 2),
+            nn.GELU(),
+            nn.LayerNorm(self.dictionary * 2),
+            nn.Linear(self.dictionary * 2, self.dictionary)
+        )
+
+        # ---- Positional encoding ----
+        self.pos_embedding = nn.Embedding(History_length, self.dictionary)
+        self.emb_dropout = nn.Dropout(self.droplayer)
+
+        # ---- Causal mask (lower‑triangular, same as Karpathy) ----
+        mask = torch.tril(torch.ones(History_length, History_length))  # (T, T)
+        self.register_buffer("causal_mask", mask.bool())               # True = keep
+
+        # ---- Recency bias (learnable, added to mask before softmax) ----
+        self.recency_bias = nn.Parameter(torch.zeros(History_length, History_length))
+
+        # ---- First encoder layer (self-attention + FFN) ----
+        self.norm1 = nn.LayerNorm(self.dictionary)
+        self.attn0 = nn.MultiheadAttention(self.dictionary, num_heads=4,
+                                           batch_first=True, dropout=self.droplayer)
+        self.norm2 = nn.LayerNorm(self.dictionary)
+        self.ffn0 = nn.Sequential(
+            nn.Linear(self.dictionary, self.dictionary * 2),
+            nn.GELU(),
+            nn.Dropout(self.droplayer),
+            nn.Linear(self.dictionary * 2, self.dictionary)
+        )
+
+        # ---- Additional encoder layers (2 more) ----
+        self.num_extra_layers = 2
+        self.extra_layers = nn.ModuleList([
+            nn.ModuleDict({
+                "norm1": nn.LayerNorm(self.dictionary),
+                "attn": nn.MultiheadAttention(self.dictionary, num_heads=4,
+                                              batch_first=True, dropout=self.droplayer),
+                "norm2": nn.LayerNorm(self.dictionary),
+                "ffn": nn.Sequential(
+                    nn.Linear(self.dictionary, self.dictionary * 2),
+                    nn.GELU(),
+                    nn.Dropout(self.droplayer),
+                    nn.Linear(self.dictionary * 2, self.dictionary)
+                )
+            }) for _ in range(self.num_extra_layers)
+        ])
+
+        
+
+        # ---- Pooling (cross‑attention, no causal mask) ----
+        self.num_queries = 12
+        self.attn_pool = nn.MultiheadAttention(self.dictionary, num_heads=4,
+                                               batch_first=True, dropout=self.droplayer)
+        self.pool_query = nn.Parameter(torch.randn(1, self.num_queries, self.dictionary))
+
+        # ---- MLP head ----
+        mlp_input = self.dictionary * self.num_queries
+        self.mlp = nn.Sequential(
+            nn.LayerNorm(mlp_input),
+            nn.Linear(mlp_input, self.dictionary * 6),
+            nn.GELU(),
+            nn.Dropout(self.droplayer),
+            nn.LayerNorm(self.dictionary * 6),
+            nn.Linear(self.dictionary * 6, self.dictionary * 2),
+            nn.GELU(),
+            nn.Dropout(self.droplayer),
+            nn.Linear(self.dictionary * 2, Output_dim * Prediction_length)
+        )
+
+        self.res_mlp = nn.Linear(mlp_input, Output_dim * Prediction_length)
+
+    def _build_mask(self, T, device):
+        """Returns (T,T) float mask: 0 where allowed, -inf where future."""
+        mask = torch.zeros(T, T, device=device)
+        mask[~self.causal_mask] = float('-inf')
+        mask = mask + self.recency_bias          # learnable bias (still -inf for future)
+        return mask
+
+    def forward(self, x):
+        B, T, _ = x.shape
+        device = x.device
+
+        # Embedding
+        x = self.enc_emb(x)
+        x = x + self.pos_embedding(torch.arange(T, device=device)).unsqueeze(0)
+        x = self.emb_dropout(x)
+
+        # Causal mask (same for all layers)
+        attn_mask = self._build_mask(T, device)
+
+        # First block
+        x = x + self.attn0(self.norm1(x), self.norm1(x), self.norm1(x),
+                           attn_mask=attn_mask, need_weights=False)[0]
+        x = x + self.ffn0(self.norm2(x))
+
+        # Extra blocks
+        for layer in self.extra_layers:
+            x = x + layer["attn"](layer["norm1"](x), layer["norm1"](x), layer["norm1"](x),
+                                  attn_mask=attn_mask, need_weights=False)[0]
+            x = x + layer["ffn"](layer["norm2"](x))
+
+        # Pooling (cross‑attention, no mask)
+        query = self.pool_query.expand(B, -1, -1)
+        x, _ = self.attn_pool(query, x, x)
+        x = x.reshape(B, -1)
+
+
+        mlp_out = self.mlp(x) + self.res_mlp(x)  # both take x (B, 6144)
+        return mlp_out
+
+
+if __name__ == "__main__":
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using {device} device")
+
+    # Load train/test data (saved by the data preparation script)
+    train_data = torch.load("models/TrainData_train.pt", weights_only=False)
+    History_length = train_data['History_length']
+    Prediction_length = train_data['Prediction_length']
+    input_features = train_data['Features']      # should be 6 now
+    Output_dim = train_data['Output']            # should be 2
+    train_pairs = train_data['training_pairs']
+
+    test_data = torch.load("models/TrainData_test.pt", weights_only=False)
+    test_pairs = test_data['training_pairs']
+
+    print(f"Loaded data: input_features = {input_features}, Output_dim = {Output_dim}")
+
+    # Build tensors
+    x_train = torch.tensor([inp for _, _, inp in train_pairs], dtype=torch.float32)
+    y_train = torch.tensor([pred for _, pred, _ in train_pairs], dtype=torch.float32)
+
+    x_test = torch.tensor([inp for _, _, inp in test_pairs], dtype=torch.float32)
+    y_test = torch.tensor([pred for _, pred, _ in test_pairs], dtype=torch.float32)
+
+    pos_future_train = torch.tensor([pos[0] for pos, _, _ in train_pairs], dtype=torch.float32)
+    pos_cur_train = torch.tensor([pos[1] for pos, _, _ in train_pairs], dtype=torch.float32)
+
+    pos_future_test = torch.tensor([pos[0] for pos, _, _ in test_pairs], dtype=torch.float32)
+    pos_cur_test = torch.tensor([pos[1] for pos, _, _ in test_pairs], dtype=torch.float32)
+
+    x_train = x_train.view(-1, History_length, input_features)
+    y_train = y_train.view(-1, Prediction_length, Output_dim)
+
+    x_test = x_test.view(-1, History_length, input_features)
+    y_test = y_test.view(-1, Prediction_length, Output_dim)
+
+    print(f"Train samples: {x_train.shape[0]} | Test samples: {x_test.shape[0]}")
+
+    # Normalisation (all features together)
+    x_mean = x_train.mean(dim=(0, 1), keepdim=True)
+    x_std = x_train.std(dim=(0, 1), keepdim=True) #+ 1e-8
+    y_mean = y_train.mean(dim=(0, 1), keepdim=True)
+    y_std = y_train.std(dim=(0, 1), keepdim=True) #+ 1e-8
+
+    x_train = (x_train - x_mean) / x_std
+    x_test = (x_test - x_mean) / x_std
+    y_train = (y_train - y_mean) / y_std
+    y_test = (y_test - y_mean) / y_std
+
+    # Move to device
+    x_mean = x_mean.to(device)
+    x_std = x_std.to(device)
+    y_mean = y_mean.to(device)
+    y_std = y_std.to(device)
+
+    x_test = x_test.to(device)
+    y_test = y_test.to(device)
+    pos_future_test = pos_future_test.to(device)
+    pos_cur_test = pos_cur_test.to(device)
+
+    model = Transformer(input_features, History_length, Prediction_length, Output_dim).to(device)
+
+    # Save normalisation parameters
+    torch.save({
+        "x_mean": x_mean,
+        "x_std": x_std,
+        "y_mean": y_mean,
+        "y_std": y_std,
+    }, 'models/TransformerNorm.pt')
+
+    for name, p in model.named_parameters():
+        print(name)
+
+    criterion = nn.L1Loss()
+    #criterion = nn.MSELoss()
+    optimizer = torch.optim.AdamW([
+    {'params': [model.pool_query], 'lr': 5e-3},
+    {'params': [p for n, p in model.named_parameters() 
+                if 'pool_query' not in n], 'lr': 1e-4}
+], weight_decay=1e-5)
+
+    
+    print("x_train stats per channel:")
+    for ch in range(x_train.shape[-1]):
+        d = x_train[..., ch]
+        print(f"  ch{ch}: min={d.min():.3f}, max={d.max():.3f}, mean={d.mean():.3f}, std={d.std():.3f}")
+
+    print("y_train stats per channel:")
+    for ch in range(y_train.shape[-1]):
+        d = y_train[..., ch]
+        print(f"  ch{ch}: min={d.min():.3f}, max={d.max():.3f}, mean={d.mean():.3f}, std={d.std():.3f}")
+
+    
+
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('high')
+
+    print("Model compiling....")
+    # torch.compile
+    if torch.cuda.is_available():
+        try:
+            model = torch.compile(model, mode="reduce-overhead", dynamic=False)
+            print("Model successfully compiled.")
+            # Load previous weights for quicker training
+            state_dict = torch.load('models/Transformer_test.pth')
+            model.load_state_dict(state_dict, strict=False)
+
+            print(f"Model state dict keys: {model.state_dict().keys()}")
+            print(f"Loaded state dict keys: {state_dict.keys()}")
+        except Exception as e:
+            print(f"Compilation skipped: {e}")
+
+    # DataLoader
+    train_dataset = TensorDataset(x_train, y_train, pos_future_train, pos_cur_train)
+    train_loader = DataLoader(train_dataset, batch_size=512*4, shuffle=True,
+                              num_workers=4, pin_memory=True, persistent_workers=True,
+                              prefetch_factor=4)
+    # train_loader = DataLoader(train_dataset, batch_size=512*4, shuffle=True,
+    #                           pin_memory=True)
+
+    
+
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=20, T_mult=2, eta_min=1e-7
+    )
+
+    # Early stopping
+    BestTest = float('inf')
+    MaxCount = 20
+    Counter = 0
+    best_epoch = 0
+
+    TrainLossList = []
+    TestLossList = []
+
+    initial_lr = 3e-4
+    warmup_epochs = 10
+    total_epochs = 1000   # your max epochs
+
+
+    print("Training...")
+    for epoch in range(1000):
+        model.train()
+        epoch_train_loss = torch.tensor(0.0, device='cuda')
+
+        for batch_idx, (batch_x, batch_y, pos_future, pos_cur) in enumerate(train_loader):
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.to(device)
+            pos_future = pos_future.to(device)
+            pos_cur = pos_cur.to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            with torch.autocast(device_type='cuda'):
+                predictions = model(batch_x)
+                predictions = predictions.view(batch_x.shape[0], Prediction_length, Output_dim)
+
+                # Denormalise
+                predictions_denorm = predictions * y_std + y_mean
+                batch_y_denorm = batch_y * y_std + y_mean
+                PredictPositions = pos_cur.unsqueeze(1) + predictions_denorm.cumsum(dim=1)
+
+                velocity_loss_x = WEIGHT_X * criterion(predictions_denorm[..., 0], batch_y_denorm[..., 0])
+                velocity_loss_y = WEIGHT_Y * criterion(predictions_denorm[..., 1], batch_y_denorm[..., 1])
+                velocity_loss = (velocity_loss_x + velocity_loss_y) * VELOCITY_GAIN
+
+                position_loss = criterion(PredictPositions, pos_future) * POSITION_GAIN
+                TrainLoss = velocity_loss + position_loss
+
+            scaler.scale(TrainLoss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, norm_type=2.0, error_if_nonfinite=False, foreach=None)
+            scaler.step(optimizer)
+            scaler.update()
+
+        
+
+            epoch_train_loss += TrainLoss.detach()
+        
+        scheduler.step(epoch)
+        epoch_train_loss = epoch_train_loss.item() # Moves to cpu
+        epoch_train_loss /= len(train_loader)
+
+        # Evaluation every 5 epochs
+        if epoch % 5 == 0:
+            model.eval()
+            with torch.no_grad():
+                predictions = model(x_test)
+                predictions = predictions.view(-1, Prediction_length, Output_dim)
+
+                predictions_denorm = predictions * y_std + y_mean
+                y_denorm = y_test * y_std + y_mean
+                PredictPositions = pos_cur_test.unsqueeze(1) + predictions_denorm.cumsum(dim=1)
+
+                # --- Original losses ---
+                test_vel_loss_x = WEIGHT_X * criterion(predictions_denorm[..., 0], y_denorm[..., 0])
+                test_vel_loss_y = WEIGHT_Y * criterion(predictions_denorm[..., 1], y_denorm[..., 1])
+                test_velocity_loss = (test_vel_loss_x + test_vel_loss_y) * VELOCITY_GAIN
+                test_position_loss = criterion(PredictPositions, pos_future_test) * POSITION_GAIN
+                TestLoss = test_velocity_loss + test_position_loss
+
+                # --- ADE: Average Displacement Error (mean euclidean error across all timesteps) ---
+                # Shape: (B, T, 2) -> euclidean per step -> mean over everything
+                displacement = (PredictPositions - pos_future_test).norm(dim=-1)  # (B, T)
+                ADE = displacement.mean()                                          # scalar
+
+                # --- FDE: Final Displacement Error (euclidean error at last predicted frame only) ---
+                FDE = displacement[:, -1].mean()                                   # scalar
+
+                # --- Per-step error (useful for spotting where predictions degrade) ---
+                per_step_error = displacement.mean(dim=0)  # (T,) - one value per future timestep
+
+                # --- Worst case: 90th percentile FDE (catches outlier failures) ---
+                FDE_90 = displacement[:, -1].quantile(0.90)
+
+        if epoch % 5 == 0 and batch_idx == 0:   # only first batch of eval epochs
+            total_norm = 0.0
+            for name, p in model.named_parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    if param_norm > 1000 or param_norm < 1e-7:
+                        print(f"  ⚠️  {name}: grad norm = {param_norm:.2e}")
+            total_norm = total_norm ** 0.5
+            print(f"  Total gradient norm (before clip): {total_norm:.2f}")
+
+        if epoch % 10 == 0:
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    print(f"{name:40s} mean={param.data.mean():+.4f}  std={param.data.std():.4f}  min={param.data.min():+.4f}  max={param.data.max():+.4f}")
+
+            TrainLossList.append(epoch_train_loss)
+            TestLossList.append(TestLoss)
+
+            if TestLoss < BestTest:
+                BestTest = TestLoss
+                Counter = 0
+                best_epoch = epoch
+                torch.save(model.state_dict(), 'models/Transformer_test.pth')
+            else:
+                Counter += 1
+
+            print(f"Epoch {epoch} | Train: {epoch_train_loss:.4f} | Test: {TestLoss:.4f} | Counter: {Counter}")
+            print(f"  Vel Loss:  {test_velocity_loss:.4f} | Pos Loss: {test_position_loss:.4f}")
+            print(f"  ADE:       {ADE:.2f}px  | FDE: {FDE:.2f}px  | FDE_90: {FDE_90:.2f}px")
+            #print(f"  Per-step:  {' | '.join([f't+{i+1}: {e:.1f}px' for i, e in enumerate(per_step_error)])}\n")
+
+        if Counter >= MaxCount:
+            print(f"\nEarly stopping at epoch {epoch}")
+            print(f"Best model at epoch {best_epoch} with test loss: {BestTest:.4f}")
+            break
+
+    
+
+    # Plot losses
+    TrainLossList = [float(x) if torch.is_tensor(x) else x for x in TrainLossList]
+    TestLossList = [float(x) if torch.is_tensor(x) else x for x in TestLossList]
+
+    plt.plot(TrainLossList, label="Train Loss")
+    plt.plot(TestLossList, label="Test Loss")
+    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.yscale('log')
+    plt.text(len(TrainLossList)*0.6, max(TrainLossList)*0.5,
+             f"Best Test Loss: {BestTest:.4f} at epoch {best_epoch}",
+             fontsize=10, bbox=dict(facecolor='white', alpha=0.5))
+    plt.legend()
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss (L1)")
+    plt.title("Transformer Training")
+    plt.show()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Model params: {total_params:,}")
+    print(f"Training samples: {x_train.shape[0]}")
+    print(f"Ratio (samples/params): {x_train.shape[0] / total_params:.2f}")

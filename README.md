@@ -58,29 +58,13 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
 ## Software Architecture
 
-```mermaid
-graph TD
-    A[Camera Feed] --> B[Tracking: HSV + Contours]
-    B --> C[Prediction Engine]
-    C --> D[Interception Planner: Best_Search]
-    D --> E[Robot Interface: XML-RPC]
-    E --> F[UR3e Arm]
+### High‑Level Flowchart
 
-    subgraph Prediction Models
-        C1[Kalman Filter]
-        C2[LSTM]
-        C3[Transformer]
-        C4[Linear]
-    end
+![High‑Level Flowchart](docs/images/Flow_Chart_high.png)
 
-    C --> C1
-    C --> C2
-    C --> C3
-    C --> C4
+### Low‑Level Flowchart
 
-    B -->|Output: (x, y) pixels| C
-    C -->|Predicted points| D
-    D -->|Intercept pose| E
+![Low‑Level Flowchart](docs/images/Flow_Chart_low.png)
 
 1. **Tracking** – Extracts blue object coordinates using HSV filtering and contour detection.
 2. **Prediction** – One of four models (Kalman, LSTM, Transformer, Linear) forecasts the target’s future path.

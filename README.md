@@ -7,7 +7,9 @@
 
 A real‑time interception system that tracks a moving hexapod robot (or any blue target) with a camera, predicts its future trajectory using Kalman filters, LSTMs, or Transformers, and commands a UR3e robotic arm to intercept it.
 
-<img src="docs/images/Flow_Chart_high.png" style="width:60%; display:block; margin: 0 auto;">
+<div align="center">
+  <img src="docs/images/Flow_Chart_high.png" width="60%">
+</div>
 
 ## Table of Contents
 - [Overview](#overview)

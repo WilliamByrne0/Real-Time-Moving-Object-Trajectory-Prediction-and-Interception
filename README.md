@@ -6,7 +6,7 @@
 
 A real-time object interception system using a hexapod robot (InsectBot Mini MKII) and a UR3e robotic arm. The system predicts moving object trajectories using Kalman filters, LSTMs, or Transformers and commands the robot to intercept.
 
-![Demo](docs/demo.gif) *(replace with actual image)*
+
 
 ## Features
 - **Multiple Prediction Models**: Kalman Filter, LSTM, Transformer, Linear Motion Model.

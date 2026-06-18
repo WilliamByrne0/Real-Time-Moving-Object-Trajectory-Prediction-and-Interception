@@ -232,10 +232,6 @@ This work has been published in the **Journal of SETU Engineering Proceedings (J
 
 **In-text citation:** (Byrne, 2026)
 
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
-
 ## License
 
 This project is licensed under the Apache License, Version 2.0 – see the [LICENSE](LICENSE) file for details.

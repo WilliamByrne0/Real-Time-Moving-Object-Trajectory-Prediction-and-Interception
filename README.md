@@ -197,6 +197,14 @@ The `insectbot_hexa.ino` file is uploaded to the InsectBot's Arduino board. It c
 | **High prediction error** | Model not trained for current motion pattern. | Collect more training data or adjust model hyperparameters. |
 | **Camera frame drop** | High resolution or FPS too high. | Reduce `WIDTH`/`HEIGHT` or `FPS`. |
 
+## Publication
+
+This work has been published in the **Journal of SETU Engineering Proceedings (JSEP)**.
+
+**Reference:**
+> Byrne, William. (2026) ‘Real-Time Moving Object Trajectory Prediction and Interception’, *Journal of SETU Engineering Proceedings*, Issue 1, pp. 37–38. doi: [10.83373/PE89-4D81](https://doi.org/10.83373/PE89-4D81). eISSN: 3088-7100.
+
+**In-text citation:** (Byrne, 2026)
 
 ## License
 

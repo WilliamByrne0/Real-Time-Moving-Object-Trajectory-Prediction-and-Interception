@@ -1,0 +1,22 @@
+name: hexapod-intercept
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy>=1.26,<2.0
+  - opencv>=4.8
+  - pyyaml>=6.0
+  - matplotlib>=3.7
+  - pytorch>=2.1
+  - torchvision>=0.16
+  - pytorch-cuda=12.1       # remove for CPU-only
+  - pip:
+      - pydantic>=2.0
+      - rich>=13.0
+      - tqdm>=4.65
+      - pytest>=7.4
+      - ruff>=0.1.6
+      - mypy>=1.5

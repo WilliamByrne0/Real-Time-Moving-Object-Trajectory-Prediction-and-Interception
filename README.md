@@ -1,3 +1,4 @@
+```markdown
 # Hexapod Robot Object Interception System
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
@@ -6,6 +7,7 @@
 
 A real‑time interception system that tracks a moving hexapod robot (or any blue target) with a camera, predicts its future trajectory using Kalman filters, LSTMs, or Transformers, and commands a UR3e robotic arm to intercept it.
 
+![High‑Level Flowchart](docs/images/Flow_Chart_high.png)
 
 ## Table of Contents
 - [Overview](#overview)
@@ -18,12 +20,19 @@ A real‑time interception system that tracks a moving hexapod robot (or any blu
 - [Training Your Own Models](#training-your-own-models)
 - [Robot Setup](#robot-setup)
 - [Troubleshooting](#troubleshooting)
+- [Publication](#publication)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Overview
 
 The system processes live video from a webcam, extracts the blue object (the target), predicts its path using a chosen model, computes an intercept point that the UR3e arm can reach in time (using inverse kinematics and motion time estimation), and sends the arm to that point. The target hexapod is controlled separately via its Arduino firmware, allowing for dynamic testing.
+
+**Key Performance Highlights (from experimental evaluation):**
+- **Transformer** achieved the highest interception success rate of **93.3%** and the lowest mean trajectory error of **6.6 mm**.
+- **LSTM** reached **86.7%** success and **9.7 mm** error.
+- Classical methods (Kalman Filter and Linear) achieved **73.3%** and **80.0%** success respectively, struggling with rapid direction changes.
+- The system operated in real time with a mean loop time of **29.0 ms**, well within the **39.65 ms** frame period.
 
 ## Features
 
@@ -33,28 +42,31 @@ The system processes live video from a webcam, extracts the blue object (the tar
   - Transformer (self‑attention)
   - Linear (velocity smoothing)
 - **Real‑Time Vision**
-  - HSV colour filtering (blue)
+  - HSV colour filtering (blue) with histogram equalisation on the value channel
   - Morphological cleaning and contour detection
-  - Perspective warp to arena coordinates
+  - Perspective warp to arena coordinates using red tape detection
 - **Robotic Control**
   - XML‑RPC communication with UR3e
-  - Custom inverse kinematics with collision avoidance
-  - Latency measurement and compensation
-  - Automatic selection of fastest joint solution
+  - Custom analytical inverse kinematics (IGM) with collision avoidance
+  - Latency measurement and compensation (measured at **63.6 ms** mean command latency)
+  - Automatic selection of fastest joint solution using trapezoidal velocity profiles
 - **Visual Feedback**
   - Live video with overlay of predicted path, intercept point, and FPS
 - **Simulation Mode**
   - Run on recorded videos without hardware
+- **Data Augmentation**
+  - Geometric mirroring and Gaussian noise injection for robust model training
 
 ## Hardware Requirements
 
 | Component | Details |
 |-----------|---------|
-| **Robotic Arm** | Universal Robots UR3e (or any with XML‑RPC and inverse kinematics) |
-| **Target** | InsectBot Mini MKII hexapod (or any blue‑colored object) |
-| **Camera** | 1080p webcam with manual exposure/white balance (recommended) |
+| **Robotic Arm** | Universal Robots UR3e (6 DOF) with XML‑RPC interface |
+| **Target** | DFRobot InsectBot Mini MKII hexapod (or any blue‑colored object) |
+| **Camera** | 1080p webcam operating at **25.22 FPS** with manual exposure/white balance |
+| **Workspace** | Arena size: **470 mm × 120 mm** with red tape boundary |
 | **Compute** | PC with Python 3.8+, OpenCV, PyTorch (CUDA optional) |
-| **Network** | Ethernet or Wi‑Fi for UR3e communication |
+| **Network** | Ethernet or Wi‑Fi for UR3e communication (XML‑RPC over HTTP) |
 
 ## Software Architecture
 
@@ -66,10 +78,12 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
 ![Low‑Level Flowchart](docs/images/Flow_Chart_low.png)
 
-1. **Tracking** – Extracts blue object coordinates using HSV filtering and contour detection.
-2. **Prediction** – One of four models (Kalman, LSTM, Transformer, Linear) forecasts the target’s future path.
-3. **Interception Planner** – Iterates over predicted points, checks feasibility via inverse kinematics and robot motion time, and selects the best reachable intercept point.
-4. **Robot Interface** – Sends the final pose to the UR3e via XML‑RPC and monitors execution.
+### Processing Pipeline
+
+1. **Tracking** – Extracts blue object coordinates using HSV filtering (H: 90–130, S: 65–250, V: 35–250) with histogram equalisation and morphological closing.
+2. **Prediction** – One of four models (Kalman, LSTM, Transformer, Linear) forecasts the target’s future path up to **150 frames** (~5.95 seconds).
+3. **Interception Planner** – Iterates over predicted points, checks feasibility via analytical inverse kinematics and robot motion time (trapezoidal profile), and selects the best reachable intercept point.
+4. **Robot Interface** – Sends the final pose to the UR3e via XML‑RPC and monitors execution with measured latency compensation.
 
 ## Installation
 
@@ -95,24 +109,32 @@ The system processes live video from a webcam, extracts the blue object (the tar
 
    If you plan to use GPU acceleration for AI models, install PyTorch with CUDA support following the [official instructions](https://pytorch.org/get-started/locally/).
 
+4. **Download pre‑trained model weights** (if not already in `models/`):
+   - Place `LSTM.pth`, `Transformer.pth`, `TrainData_train.pt`, `TrainData_test.pt`, and the normalisation files (`LSTMNorm.pt`, `TransformerNorm.pt`) in the `models/` folder.
+   - If you are training your own models, see [Training Your Own Models](#training-your-own-models).
+
 ## Configuration
 
 All tunable parameters are defined at the top of `src/hexapod_intercept/Obj_int_Real_06_05_26.py`. Key settings include:
 
 | Parameter | Description |
 |-----------|-------------|
-| `WIDTH`, `HEIGHT` | Camera resolution (pixels). |
+| `WIDTH`, `HEIGHT` | Camera resolution (1280 × 720 pixels). |
 | `BALL_RADIUS` | Radius of the target marker (for visualisation). |
 | `SIMULATION` | `0` = use live camera, `1` = use video file. |
 | `SEND_XMLRPC` | `1` to send commands to UR3e, `0` for testing. |
 | `FILTER` | `"blue"` for blue target; other values use a generic threshold. |
 | `LSTM`, `TRANSFORMER`, `KALMANFILTER`, `LINEARMODEL` | Select which prediction model to use. Only one should be `1`. |
-| `PREDICTION_LENGTH` | Number of future frames to predict. |
-| `GRAD_THRESH` | Error gradient threshold to trigger interception search. |
-| `FPS`, `dt` | Frame rate and time step (used for Kalman). |
+| `PREDICTION_LENGTH` | Number of future frames to predict (default: 150). |
+| `HISTORY_LENGTH` | Input window size for LSTM/Transformer (default: 60 frames, ~2.38 seconds). |
+| `GRAD_THRESH` | Error gradient threshold to trigger interception search (default: 0.5). |
+| `FPS`, `dt` | Frame rate (25.22 FPS) and time step for Kalman filter. |
 | `MIN_TIME`, `MAX_TIME` | Acceptable time window (seconds) for robot arrival. |
 | `REST_ANGLE` | Default joint angles of the UR3e (obtained from robot). |
+| `LINEAR_SMOOTH` | Number of frames for velocity averaging in linear model (default: 60). |
+| `MAX_UNCERTAINTY` | Uncertainty threshold for Kalman filter predictions. |
 
+**Important:** After changing the configuration, restart the script.
 
 ## Usage
 
@@ -135,7 +157,7 @@ If you want to test without a robot or camera, set `SIMULATION = 1` and point `V
 
 ```bash
 # Edit the config file or parameters to enable simulation
-python src/hexapod_intercept/interception.py
+python src/hexapod_intercept/Obj_int_Real_06_05_26.py
 ```
 
 ### Recording Output
@@ -147,8 +169,9 @@ Set `SAVE_VIDEO = 1` and specify `OUTPUT_PATH` to save the annotated video.
 ### Data Preparation
 
 1. Record videos of the target moving in the arena (e.g., the hexapod walking).
-2. Use the data preprocessing script `traindata_08_03_2026.py` (provided in the repo) to extract the object positions from the videos.
+2. Use the data preprocessing script `traindata.py` (provided in the repo) to extract the object positions from the videos.
 3. The script will generate `.pt` files containing sequences of positions, velocities, and accelerations, divided into training and test sets.
+4. Data augmentation includes geometric mirroring (x-axis, y-axis, both) and Gaussian noise injection (5% of feature standard deviation) to improve model generalisation.
 
 ### LSTM Training
 
@@ -196,6 +219,7 @@ The `insectbot_hexa.ino` file is uploaded to the InsectBot's Arduino board. It c
 | **LSTM/Transformer model not loaded** | Missing model files or path mismatch. | Check `models/` folder and paths in `Prediction.py`. |
 | **High prediction error** | Model not trained for current motion pattern. | Collect more training data or adjust model hyperparameters. |
 | **Camera frame drop** | High resolution or FPS too high. | Reduce `WIDTH`/`HEIGHT` or `FPS`. |
+| **Occlusion of blue motor housing** | Insectbot's head blocks the blue housing during vertical approaches. | Use `OCCLUSIONS=1` to fall back to predicted positions. |
 
 ## Publication
 
@@ -206,12 +230,16 @@ This work has been published in the **Journal of SETU Engineering Proceedings (J
 
 **In-text citation:** (Byrne, 2026)
 
+## Contributing
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to submit issues, feature requests, and pull requests.
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0 – see the [LICENSE](LICENSE) file for details.
 
 ```
-Copyright 2025 [Your Name / Your Organisation]
+Copyright 2025 William Byrne
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -230,4 +258,5 @@ limitations under the License.
 - [Lumi](http://www.dfrobot.com) for the InsectBot Mini MKII design.
 - Universal Robots for the UR3e SDK and documentation.
 - The PyTorch and OpenCV communities for their excellent libraries.
+- Supervisors and faculty at South East Technological University for their guidance and support.
 ```

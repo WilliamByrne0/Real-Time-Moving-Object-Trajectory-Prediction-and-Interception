@@ -81,7 +81,7 @@ The system processes live video from a webcam, extracts the blue object (the tar
 ### Low‑Level Flowchart
 
 <div align="center">
-  <img src="docs/images/Flow_Chart_low.png" width="30%">
+  <img src="docs/images/Flow_Chart_low.png" width="40%">
 </div>
 
 ### Processing Pipeline
